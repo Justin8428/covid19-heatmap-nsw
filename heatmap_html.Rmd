@@ -1,0 +1,121 @@
+---
+title: "heatmap"
+author: "justin"
+date: "17/02/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Libraries
+```{r}
+library(tidyverse)
+library(sf)
+library(sqldf)
+library(plotly)
+library(ggmap)
+```
+
+
+Geographical postcode data was obtained from the Australian Bureau of Statistics, 2016.
+
+# Cleaning the cases data
+
+```{r}
+# Extract the postcode data from the survey
+
+survey_postcodes = as.data.frame(table(surveydata$postcode)) %>% rename("Postcode" = Var1) # replace the variable name if it changes above
+
+survey_postcodes$Postcode = as.numeric(as.character(survey_postcodes$Postcode)) #again recode to numeric, I don't think this is necessary anymore but since it worked before I don't want to touch it :-)
+
+
+
+```
+
+
+```{r}
+cases = read.csv("./data/confirmed_cases_nsw_17_02_2021.csv", header = TRUE)
+```
+
+```{r}
+cases_by_postcode = sqldf("SELECT postcode, COUNT(postcode) as count
+                          FROM cases
+                          WHERE postcode >= 2000 AND postcode <3000 AND postcode != 2898 AND postcode !=2899
+                          GROUP BY postcode")
+```
+
+
+
+# Heatmap
+```{r}
+data = cases_by_postcode
+# data$count = data$count
+title = "COVID in the \nGreater Sydney Region since start"
+
+# read in the spatial data and convert postcodes to numeric
+aust_sf = st_read("au_spatial_data/POA_2016_AUST.shp")
+aust_sf_2 = aust_sf
+aust_sf_2$POA_NAME16 = as.numeric(as.character(aust_sf_2$POA_NAME16))
+#glimpse(aust_sf_2)
+
+# filter by NSW locations
+nsw_sf = aust_sf_2 %>% filter(POA_NAME16 >= 2000 & POA_NAME16 <3000 & POA_NAME16 != 2898 & POA_NAME16 != 2899) # we might as well get rid of Lord Howe Island and Norfolk Island
+#glimpse(nsw_sf)
+
+#write_xlsx(nsw_sf, "nsw_sf.xlsx")
+
+
+# join the surveydata with the postcode GIS info from ABS
+
+postcode_locations = left_join(nsw_sf, data, by = c("POA_NAME16" = "postcode")) %>% select("POA_NAME16", "count", "geometry")
+
+
+# Crop the map to Sydney region 
+postcode_locations_cropped = st_crop(postcode_locations, xmin = 150.2, xmax = 151.6, ymin = -34.5, ymax = -33.4) %>% st_cast("MULTIPOLYGON") #ref: https://www.r-bloggers.com/zooming-in-on-maps-with-sf-and-ggplot2/
+#casting is required due to a bug in ggplotly(), see https://github.com/r-spatial/sf/issues/584
+
+postcode_locations_cropped$count[is.na(postcode_locations_cropped$count)] = 0 #replace NA with 0, for 0 responses. 
+#postcode_locations_cropped$Freq = as.factor(postcode_locations_cropped$Freq) #convert to factor for color brewer
+
+
+# plot the base map
+
+map = ggplot(postcode_locations_cropped) +
+  geom_sf(aes(fill=count, text = paste("Postcode: ", POA_NAME16, "\nResponses: ", count)), inherit.aes = FALSE) +
+  scale_fill_continuous(high = "#013220", low = "#FFFFFF") + #flip the colouring so lower density is darker
+  labs(title = title)
+
+# map interactive
+ggplotly(map, tooltip = "text")
+```
+
+
+```{r}
+# get a base map
+ph_basemap <- get_stamenmap(bbox = c(left = 150.2, bottom = -34.5, right =
+151.6, top = -33.4), zoom = 10)
+#xmin = 150.2, xmax = 151.6, ymin = , ymax = -33.4
+
+ggmap(ph_basemap)
+```
+
+
+```{r}
+ggmap(ph_basemap) +
+  geom_sf(data = postcode_locations_cropped,
+    aes(fill=count, text = paste("Postcode: ", POA_NAME16, "\nResponses: ", count), inherit.aes = FALSE)) +
+  scale_fill_continuous(high = "#013220", low = "#FFFFFF") + #flip the colouring so lower density is darker
+  labs(title = title)
+  
+```
+
+```{r}
+ggmap(ph_basemap) +
+  plot_sf(data = postcode_locations_cropped,
+    aes(fill=count)) +
+    coord_sf(crs = st_crs(4326))
+```
+
+
